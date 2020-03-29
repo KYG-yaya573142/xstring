@@ -32,8 +32,22 @@ typedef union {
         /* the last 4 bits are important flags */
     };
 } xs;
+     
+xs *xs_new(xs *x, const void *p);
+xs *xs_grow(xs *x, size_t len);
+xs *xs_concat(xs *string, const xs *prefix, const xs *suffix);
+xs *xs_trim(xs *x, const char *trimset);
+xs *xs_cpy(xs *dest, xs* src);
 
-static inline bool xs_is_ptr(const xs *x) { return x->is_ptr; }
+#define REFCNT_NUM(ptr) (*((int*)(ptr) - 1))
+#define REFCNT_INCRE(ptr) (REFCNT_NUM(ptr)++)
+#define REFCNT_DECRE(ptr) (REFCNT_NUM(ptr)--)
+#define xs_literal_empty() (xs) { .space_left = 15 }
+
+static inline bool xs_is_ptr(const xs *x)
+{
+    return x->is_ptr;
+}
 static inline size_t xs_size(const xs *x)
 {
     return xs_is_ptr(x) ? x->size : 15 - x->space_left;
@@ -46,27 +60,27 @@ static inline size_t xs_capacity(const xs *x)
 {
     return xs_is_ptr(x) ? ((size_t) 1 << x->capacity) - 1 : 15;
 }
-
-#define xs_literal_empty() \
-    (xs) { .space_left = 15 }
-
-static inline int ilog2(uint32_t n) { return 32 - __builtin_clz(n) - 1; }
-
-xs *xs_new(xs *x, const void *p)
+static inline int ilog2(uint32_t n)
+{
+    return 32 - __builtin_clz(n) - 1;
+}
+static inline xs *xs_newempty(xs *x)
 {
     *x = xs_literal_empty();
-    size_t len = strlen(p) + 1;
-    if (len > 16) {
-        x->capacity = ilog2(len) + 1;
-        x->size = len - 1;
-        x->is_ptr = true;
-        x->ptr = malloc((size_t) 1 << x->capacity);
-        memcpy(x->ptr, p, len);
-    } else {
-        memcpy(x->data, p, len);
-        x->space_left = 15 - (len - 1);
-    }
     return x;
+}
+static inline xs *xs_free(xs *x)
+{
+    if (xs_is_ptr(x)) {
+        if (REFCNT_NUM(x->ptr) > 1) {
+            REFCNT_DECRE(x->ptr);
+            x->ptr = NULL;
+        } else {
+            x->ptr -= 4; /* leading 4 bytes = refcnt */
+            free(x->ptr);
+        }
+    }
+    return xs_newempty(x);
 }
 
 /* Memory leaks happen if the string is too long but it is still useful for
@@ -80,36 +94,69 @@ xs *xs_new(xs *x, const void *p)
      }){1}),                                               \
      xs_new(&xs_literal_empty(), "" x))
 
-/* grow up to specified size */
-xs *xs_grow(xs *x, size_t len)
-{
-    if (len <= xs_capacity(x))
-        return x;
-    len = ilog2(len) + 1;
-    if (xs_is_ptr(x))
-        x->ptr = realloc(x->ptr, (size_t) 1 << len);
-    else {
-        char buf[16];
-        memcpy(buf, x->data, 16);
-        x->ptr = malloc((size_t) 1 << len);
-        memcpy(x->ptr, buf, 16);
-    }
-    x->is_ptr = true;
-    x->capacity = len;
-    return x;
-}
-
-static inline xs *xs_newempty(xs *x)
+xs *xs_new(xs *x, const void *p)
 {
     *x = xs_literal_empty();
+    size_t len = strlen(p) + 1;
+    if (len > 16) {
+        x->capacity = ilog2(len) + 1;
+        x->size = len - 1;
+        x->is_ptr = true;
+        x->ptr = malloc((size_t) 1 << x->capacity + 4);
+        x->ptr += 4; /* leading 4 bytes = refcnt */
+        REFCNT_NUM(x->ptr) = 1;
+        memcpy(x->ptr, p, len);
+    } else {
+        memcpy(x->data, p, len);
+        x->space_left = 15 - (len - 1);
+    }
     return x;
 }
 
-static inline xs *xs_free(xs *x)
+/* change to specified size */
+xs *xs_grow(xs *x, size_t len)
 {
-    if (xs_is_ptr(x))
-        free(xs_data(x));
-    return xs_newempty(x);
+    if (len <= 15) { /* data on stack */
+        if (xs_is_ptr(x)) { /* move data from heap to stack */
+            char buf[16] = {0};
+            memcpy(buf, x->ptr, len);
+            xs_free(x);
+            memcpy(x->data, buf, 16);
+        } else {
+            x->data[len] = 0;
+        }
+        x->space_left = 15 - len;
+    } else { /* data on heap */
+        size_t capacity = ilog2(len + 1) + 1;
+        size_t size = (xs_size(x) > len)? len:xs_size(x);
+        if (xs_is_ptr(x)) {
+            if (REFCNT_NUM(x->ptr) > 1) { /* copy on write */
+                char *tmp = x->ptr;
+                REFCNT_DECRE(x->ptr);
+                x->ptr = malloc((size_t) 1 << capacity + 4);
+                x->ptr += 4; /* leading 4 bytes = refcnt */
+                REFCNT_NUM(x->ptr) = 1;
+                memcpy(x->ptr, tmp, size);
+            } else { /* refcnt == 1 */
+                x->ptr -= 4;
+                x->ptr = realloc(x->ptr, (size_t) 1 << capacity + 4);
+                x->ptr += 4;
+            }
+        }
+        else { /* move data from stack to heap */
+            char buf[16];
+            memcpy(buf, x->data, 16);
+            x->ptr = malloc((size_t) 1 << capacity + 4);
+            x->ptr += 4;
+            REFCNT_NUM(x->ptr) = 1;
+            memcpy(x->ptr, buf, 16);
+        }
+        x->ptr[size] = 0;
+        x->size = size;
+        x->is_ptr = true;
+        x->capacity = capacity;
+    }
+    return x;
 }
 
 xs *xs_concat(xs *string, const xs *prefix, const xs *suffix)
@@ -143,6 +190,8 @@ xs *xs_trim(xs *x, const char *trimset)
 {
     if (!trimset[0])
         return x;
+
+    x = xs_grow(x, xs_capacity(x)); /* copy on write */
 
     char *dataptr = xs_data(x), *orig = dataptr;
 
@@ -183,17 +232,46 @@ xs *xs_trim(xs *x, const char *trimset)
 #undef set_bit
 }
 
+xs *xs_cpy(xs *dest, xs* src)
+{
+    if (xs_is_ptr(dest))
+        xs_free(dest);
+    if (xs_is_ptr(src))
+        REFCNT_INCRE(src->ptr);
+    memcpy(dest->data, src->data, 16);
+    return dest;
+}
+
 #include <stdio.h>
 
 int main()
 {
-    xs string = *xs_tmp("\n foobarbar \n\n\n");
-    xs_trim(&string, "\n ");
-    printf("[%s] : %2zu\n", xs_data(&string), xs_size(&string));
-
-    xs prefix = *xs_tmp("((("), suffix = *xs_tmp(")))");
-    xs_concat(&string, &prefix, &suffix);
-    printf("[%s] : %2zu\n", xs_data(&string), xs_size(&string));
-
+    printf("---original---\n");
+    xs *src = xs_tmp("foobarbar");
+    xs *dest = xs_tmp("original");
+    xs *prefix = xs_tmp("@I like "), *suffix = xs_tmp("!!!");
+    printf("src: [%s] size: %2zu\n", xs_data(src), xs_size(src));
+    printf("dest: [%s] size: %2zu\n", xs_data(dest), xs_size(dest));
+    printf("prefix: [%s] suffix: [%s]\n", xs_data(prefix), xs_data(suffix));
+    xs_concat(src, prefix, suffix);
+    printf("---after xs_concat(src, prefix, suffix)---\n");
+    printf("src: [%s] size: %2zu\n", xs_data(src), xs_size(src));
+    printf("dest: [%s] size: %2zu\n", xs_data(dest), xs_size(dest));
+    xs_cpy(dest, src);
+    printf("---after xs_cpy(dest, src)---\n");
+    printf("src: [%s] size: %2zu\n", xs_data(src), xs_size(src));
+    printf("dest: [%s] size: %2zu\n", xs_data(dest), xs_size(dest));
+    printf("src refcnt: %d dest refcnt: %d\n", REFCNT_NUM(src->ptr), REFCNT_NUM(dest->ptr));
+    printf("src: %p\ndest: %p\n", src->ptr, dest->ptr);
+    xs_grow(dest, 19);
+    printf("---after xs_grow(dest, 19)---\n");
+    printf("src: [%s] size: %2zu\n", xs_data(src), xs_size(src));
+    printf("dest: [%s] size: %2zu\n", xs_data(dest), xs_size(dest));
+    printf("src refcnt: %d dest refcnt: %d\n", REFCNT_NUM(src->ptr), REFCNT_NUM(dest->ptr));
+    printf("src: %p\ndest: %p\n", src->ptr, dest->ptr);
+    xs_trim(dest, "!@");
+    printf("---after xs_trim(dest, \"@!\")---\n");
+    printf("src: [%s] size: %2zu\n", xs_data(src), xs_size(src));
+    printf("dest: [%s] size: %2zu\n", xs_data(dest), xs_size(dest));
     return 0;
 }
