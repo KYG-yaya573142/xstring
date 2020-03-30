@@ -1,5 +1,5 @@
 CC = gcc
-CFLAG = -std=gnu11
+CFLAG = -std=gnu11 -Wall -Werror -g
 
 OBJS := xs.o
 deps := $(OBJS:%.o=.%.o.d)
@@ -12,3 +12,5 @@ xs: $(OBJS)
 
 clean:
 	rm -f $(OBJS) $(deps) xs
+
+-include $(deps)
