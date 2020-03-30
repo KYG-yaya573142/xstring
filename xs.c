@@ -146,7 +146,11 @@ xs *xs_concat(xs *string, const xs *prefix, const xs *suffix)
         memmove(data + pres, data, size);
         memcpy(data, pre, pres);
         memcpy(data + pres + size, suf, sufs + 1);
-        string->space_left = 15 - (size + pres + sufs);
+        if (xs_is_ptr(string)) {
+            string->size = size + pres + sufs;
+        } else {
+            string->space_left = 15 - (size + pres + sufs);
+        }
     } else {
         xs tmps = xs_literal_empty();
         xs_grow(&tmps, size + pres + sufs);
@@ -156,7 +160,11 @@ xs *xs_concat(xs *string, const xs *prefix, const xs *suffix)
         memcpy(tmpdata + pres + size, suf, sufs + 1);
         xs_free(string);
         *string = tmps;
-        string->size = size + pres + sufs;
+        if (xs_is_ptr(string)) {
+            string->size = size + pres + sufs;
+        } else {
+            string->space_left = 15 - (size + pres + sufs);
+        }
     }
     return string;
 }
