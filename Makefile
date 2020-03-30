@@ -8,7 +8,7 @@ xs: $(OBJS)
 	$(CC) -o $@ $^ 
 
 %.o: %.c
-	$(CC) $(CFLAG) -o $@ -c -MMD -MF .$@.d $^
+	$(CC) $(CFLAG) -o $@ -c -MMD -MF .$@.d $<
 
 clean:
 	rm -f $(OBJS) $(deps) xs
