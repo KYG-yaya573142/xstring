@@ -233,31 +233,86 @@ xs *xs_cpy(xs *dest, xs* src)
     return dest;
 }
 
+/* Reentrant xs string tokenizer */
+char *xs_strtok_r(xs *x, const char *delim, char **save_ptr)
+{
+    int src_flag = 0;
+
+    char *s = NULL;
+    char *end = NULL;
+
+    if (x == NULL) {
+        s = *save_ptr;
+    } else { /* use the source x */
+        xs_cow(x);
+        s = xs_data(x);
+        src_flag = 1;
+    }
+
+    if (*s == '\0') {
+        *save_ptr = s;
+        return NULL;
+    }
+
+    /* Scan leading delimiters */
+    s += strspn(s, delim);
+    if (*s == '\0') {
+        *save_ptr = s;
+        return NULL;
+    }
+
+    /* Find the end of the token */
+    end = s + strcspn(s, delim);
+    if (*end == '\0') {
+        *save_ptr = end;
+        return s;
+    }
+
+    /* Terminate the token and make *SAVE_PTR point past it */
+    *end = '\0';
+    *save_ptr = end + 1;
+
+    /* contents after the first tok is no longer accessible for x */
+    if (src_flag) {
+        if (xs_is_ptr(x)) {
+            x->size = (size_t) (end - xs_data(x));
+        } else {
+            x->space_left = 15 - (size_t) (end - xs_data(x));
+        }
+    }
+    return s;
+}
+
+char *xs_strtok(xs *x, const char *delim)
+{
+    static char *old;
+    return xs_strtok_r(x, delim, &old);
+}
+
 #include <stdio.h>
 
 int main()
 {
     printf("---original---\n");
-    xs *src = xs_tmp("foobarbar");
-    xs *dest = xs_tmp("original");
-    xs *prefix = xs_tmp("@I like "), *suffix = xs_tmp("!!!");
-    printf("src: [%s] size: %2zu\n", xs_data(src), xs_size(src));
-    printf("dest: [%s] size: %2zu\n", xs_data(dest), xs_size(dest));
-    printf("prefix: [%s] suffix: [%s]\n", xs_data(prefix), xs_data(suffix));
-    xs_concat(src, prefix, suffix);
-    printf("---after xs_concat(src, prefix, suffix)---\n");
-    printf("src: [%s] size: %2zu\n", xs_data(src), xs_size(src));
-    printf("dest: [%s] size: %2zu\n", xs_data(dest), xs_size(dest));
-    xs_cpy(dest, src);
     printf("---after xs_cpy(dest, src)---\n");
+    xs *src = xs_new(&xs_literal_empty(), "|foo|bar|||bar|bar!!!|||");
+    xs *dest = xs_tmp("original");    
+    xs_cpy(dest, src);
     printf("src: [%s] size: %2zu\n", xs_data(src), xs_size(src));
     printf("dest: [%s] size: %2zu\n", xs_data(dest), xs_size(dest));
     printf("src refcnt: %d dest refcnt: %d\n", REFCNT_NUM(src->ptr), REFCNT_NUM(dest->ptr));
     printf("src: %p\ndest: %p\n", src->ptr, dest->ptr);
-    xs_trim(dest, "!@");
-    printf("---after xs_trim(dest, \"@!\")---\n");
+
+    printf("---after xs_strtok(dest, \"|\")---\n");
+    printf("tok: %s\n", xs_strtok(dest, "|"));
     printf("src: [%s] size: %2zu\n", xs_data(src), xs_size(src));
     printf("dest: [%s] size: %2zu\n", xs_data(dest), xs_size(dest));
+    printf("src refcnt: %d dest refcnt: %d\n", REFCNT_NUM(src->ptr), REFCNT_NUM(dest->ptr));
     printf("src: %p\ndest: %p\n", src->ptr, dest->ptr);
+    for (int i = 0; i < 5; i++) {
+        printf("---after xs_strtok(NULL, \"|\")---\n");
+        printf("tok: %s\n", xs_strtok(NULL, "|"));
+        printf("dest: [%s] size: %2zu\n", xs_data(dest), xs_size(dest));
+    }
     return 0;
 }
